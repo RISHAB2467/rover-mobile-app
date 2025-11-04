@@ -9,13 +9,20 @@ import {
   Alert,
   Modal,
   TextInput,
+  RefreshControl,
+  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialIcons } from '@expo/vector-icons';
 import { openDatabaseAsync } from '../utils/sqliteAsync';
+import roverService from '../services/roverService';
 
 const AlertLogScreen = ({ navigation }) => {
   const [alerts, setAlerts] = useState([]);
+  const [apiAlerts, setApiAlerts] = useState([]);
+  const [localAlerts, setLocalAlerts] = useState([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [filterModalVisible, setFilterModalVisible] = useState(false);
   const [selectedAlert, setSelectedAlert] = useState(null);
@@ -44,7 +51,7 @@ const AlertLogScreen = ({ navigation }) => {
   // Initialize SQLite Database
   useEffect(() => {
     initDatabase();
-    loadAlerts();
+    loadAllAlerts();
   }, []);
 
   const initDatabase = async () => {
@@ -71,6 +78,47 @@ const AlertLogScreen = ({ navigation }) => {
     } catch (error) {
       console.error('Database initialization error:', error);
     }
+  };
+
+  // Load alerts from API
+  const loadAlertsFromAPI = async () => {
+    try {
+      setLoading(true);
+      const reports = await roverService.getDetectionReports(100);
+      
+      // Map detection reports to alert format
+      const mappedAlerts = reports.map((report) => ({
+        id: `api-${report.id}`,
+        title: report.object_detected ? `${report.object_detected} Detected` : 'Detection Event',
+        message: `Confidence: ${report.confidence}% | Distance: ${report.distance}m | Action: ${report.action_taken || 'None'}`,
+        priority: report.confidence > 90 ? 'high' : report.confidence > 70 ? 'medium' : 'low',
+        category: 'detection',
+        status: 'active',
+        created_at: report.timestamp,
+        source: 'api',
+      }));
+      
+      setApiAlerts(mappedAlerts);
+      console.log(`Loaded ${mappedAlerts.length} alerts from API`);
+    } catch (error) {
+      console.error('Error loading alerts from API:', error);
+      Alert.alert('API Error', 'Failed to fetch detection reports from server');
+      setApiAlerts([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Load all alerts (API + Local)
+  const loadAllAlerts = async () => {
+    await Promise.all([loadAlertsFromAPI(), loadLocalAlerts()]);
+  };
+
+  // Pull to refresh handler
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadAllAlerts();
+    setRefreshing(false);
   };
 
   const insertSampleAlerts = async (db) => {
@@ -125,14 +173,32 @@ const AlertLogScreen = ({ navigation }) => {
       }
       
       const result = await db.getAllAsync(query);
-      setAlerts(result);
+      setLocalAlerts(result.map(alert => ({ ...alert, source: 'local' })));
     } catch (error) {
-      console.error('Error loading alerts:', error);
+      console.error('Error loading local alerts:', error);
     }
   };
 
+  // Rename to loadLocalAlerts for clarity
+  const loadLocalAlerts = loadAlerts;
+
+  // Merge and filter alerts from both sources
   useEffect(() => {
-    loadAlerts();
+    let combined = [...apiAlerts, ...localAlerts];
+    
+    // Apply filter
+    if (filter !== 'all') {
+      combined = combined.filter(alert => alert.priority === filter);
+    }
+    
+    // Sort by date (newest first)
+    combined.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    
+    setAlerts(combined);
+  }, [apiAlerts, localAlerts, filter]);
+
+  useEffect(() => {
+    loadLocalAlerts();
   }, [filter]);
 
   const addAlert = async () => {
@@ -150,7 +216,7 @@ const AlertLogScreen = ({ navigation }) => {
       
       setFormData({ title: '', message: '', priority: 'medium', category: 'general' });
       setModalVisible(false);
-      loadAlerts();
+      loadLocalAlerts();
       Alert.alert('Success', 'Alert logged successfully');
     } catch (error) {
       console.error('Error adding alert:', error);
@@ -159,19 +225,31 @@ const AlertLogScreen = ({ navigation }) => {
   };
 
   const updateAlertStatus = async (id, status) => {
+    // Only update local alerts (API alerts are read-only)
+    if (typeof id === 'string' && id.startsWith('api-')) {
+      Alert.alert('Info', 'API alerts are read-only. Only manually logged alerts can be modified.');
+      return;
+    }
+    
     try {
       const db = await openDatabaseAsync('alerts.db');
       await db.runAsync(
         'UPDATE alerts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [status, id]
       );
-      loadAlerts();
+      loadLocalAlerts();
     } catch (error) {
       console.error('Error updating alert status:', error);
     }
   };
 
   const deleteAlert = async (id) => {
+    // Only delete local alerts (API alerts are read-only)
+    if (typeof id === 'string' && id.startsWith('api-')) {
+      Alert.alert('Info', 'Cannot delete API alerts. They are synced from the server.');
+      return;
+    }
+    
     Alert.alert(
       'Confirm Delete',
       'Are you sure you want to delete this alert?',
@@ -184,7 +262,7 @@ const AlertLogScreen = ({ navigation }) => {
             try {
               const db = await openDatabaseAsync('alerts.db');
               await db.runAsync('DELETE FROM alerts WHERE id = ?', [id]);
-              loadAlerts();
+              loadLocalAlerts();
             } catch (error) {
               console.error('Error deleting alert:', error);
             }
@@ -224,7 +302,15 @@ const AlertLogScreen = ({ navigation }) => {
             <Text style={styles.priorityText}>{item.priority.toUpperCase()}</Text>
           </View>
         </View>
-        <Text style={styles.alertDate}>{formatDate(item.created_at)}</Text>
+        <View style={styles.alertMetaRow}>
+          <Text style={styles.alertDate}>{formatDate(item.created_at)}</Text>
+          {item.source === 'api' && (
+            <View style={styles.sourceBadge}>
+              <MaterialIcons name="cloud" size={12} color="#3B82F6" />
+              <Text style={styles.sourceText}>API</Text>
+            </View>
+          )}
+        </View>
       </View>
       
       <Text style={styles.alertMessage}>{item.message}</Text>
@@ -271,13 +357,33 @@ const AlertLogScreen = ({ navigation }) => {
           <MaterialIcons name="arrow-back" size={24} color="#FFFFFF" />
         </TouchableOpacity>
         <Text style={styles.title}>Alert Log</Text>
-        <TouchableOpacity
-          style={styles.addButton}
-          onPress={() => setModalVisible(true)}
-        >
-          <MaterialIcons name="add-alert" size={24} color="#FFFFFF" />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={styles.refreshButton}
+            onPress={onRefresh}
+            disabled={refreshing}
+          >
+            <MaterialIcons 
+              name="refresh" 
+              size={24} 
+              color={refreshing ? "#9CA3AF" : "#FFFFFF"} 
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.addButton}
+            onPress={() => setModalVisible(true)}
+          >
+            <MaterialIcons name="add-alert" size={24} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
       </View>
+
+      {loading && (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="small" color="#3B82F6" />
+          <Text style={styles.loadingText}>Loading alerts from API...</Text>
+        </View>
+      )}
 
       {/* Filter Buttons */}
       <ScrollView 
@@ -310,6 +416,14 @@ const AlertLogScreen = ({ navigation }) => {
         keyExtractor={(item) => item.id.toString()}
         style={styles.list}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={['#3B82F6']}
+            tintColor="#3B82F6"
+          />
+        }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <MaterialIcons name="notification-important" size={64} color="#6B7280" />
@@ -317,6 +431,13 @@ const AlertLogScreen = ({ navigation }) => {
             <Text style={styles.emptySubtext}>
               {filter === 'all' ? 'All clear! No alerts to display.' : `No ${filter} priority alerts.`}
             </Text>
+            <TouchableOpacity
+              style={styles.retryButton}
+              onPress={onRefresh}
+            >
+              <MaterialIcons name="refresh" size={20} color="#FFFFFF" />
+              <Text style={styles.retryButtonText}>Retry API Fetch</Text>
+            </TouchableOpacity>
           </View>
         }
       />
@@ -426,6 +547,18 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: 'center',
   },
+  headerActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  refreshButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   addButton: {
     width: 40,
     height: 40,
@@ -433,6 +566,22 @@ const styles = StyleSheet.create({
     backgroundColor: '#EF4444',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  loadingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    marginHorizontal: 20,
+    marginBottom: 10,
+    borderRadius: 8,
+  },
+  loadingText: {
+    color: '#3B82F6',
+    fontSize: 14,
+    marginLeft: 8,
   },
   filterContainer: {
     paddingHorizontal: 20,
@@ -500,6 +649,26 @@ const styles = StyleSheet.create({
   alertDate: {
     color: '#9CA3AF',
     fontSize: 12,
+  },
+  alertMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  sourceBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    gap: 4,
+  },
+  sourceText: {
+    color: '#3B82F6',
+    fontSize: 10,
+    fontWeight: '600',
   },
   alertMessage: {
     color: '#E2E8F0',
@@ -574,6 +743,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginTop: 8,
     textAlign: 'center',
+  },
+  retryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#3B82F6',
+    borderRadius: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    marginTop: 20,
+    gap: 8,
+  },
+  retryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
   modalOverlay: {
     flex: 1,
