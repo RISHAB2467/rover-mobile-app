@@ -9,9 +9,11 @@ import {
   Alert,
   Modal,
   TextInput,
+  Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { openDatabaseAsync } from '../utils/sqliteAsync';
 
 const PeopleScreen = ({ navigation }) => {
@@ -25,6 +27,7 @@ const PeopleScreen = ({ navigation }) => {
     department: '',
     phone: '',
     email: '',
+    faceImage: null,
   });
 
   // Initialize SQLite Database
@@ -44,6 +47,7 @@ const PeopleScreen = ({ navigation }) => {
           department TEXT,
           phone TEXT,
           email TEXT,
+          face_image TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -63,6 +67,78 @@ const PeopleScreen = ({ navigation }) => {
     }
   };
 
+  // Request camera and media library permissions
+  const requestPermissions = async () => {
+    const cameraPermission = await ImagePicker.requestCameraPermissionsAsync();
+    const mediaPermission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    
+    if (cameraPermission.status !== 'granted' || mediaPermission.status !== 'granted') {
+      Alert.alert(
+        'Permissions Required',
+        'Camera and photo library access are needed to add face images.'
+      );
+      return false;
+    }
+    return true;
+  };
+
+  // Take photo with camera
+  const takePhoto = async () => {
+    const hasPermission = await requestPermissions();
+    if (!hasPermission) return;
+
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.7,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        setFormData({ ...formData, faceImage: result.assets[0].uri });
+      }
+    } catch (error) {
+      console.error('Error taking photo:', error);
+      Alert.alert('Error', 'Failed to take photo');
+    }
+  };
+
+  // Pick image from gallery
+  const pickImage = async () => {
+    const hasPermission = await requestPermissions();
+    if (!hasPermission) return;
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.7,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        setFormData({ ...formData, faceImage: result.assets[0].uri });
+      }
+    } catch (error) {
+      console.error('Error picking image:', error);
+      Alert.alert('Error', 'Failed to pick image');
+    }
+  };
+
+  // Show image picker options
+  const showImageOptions = () => {
+    Alert.alert(
+      'Add Face Image',
+      'Choose an option',
+      [
+        { text: 'Take Photo', onPress: takePhoto },
+        { text: 'Choose from Gallery', onPress: pickImage },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  };
+
   const addPerson = async () => {
     if (!formData.name.trim()) {
       Alert.alert('Error', 'Name is required');
@@ -72,11 +148,11 @@ const PeopleScreen = ({ navigation }) => {
     try {
       const db = await openDatabaseAsync('people.db');
       await db.runAsync(
-        'INSERT INTO people (name, position, department, phone, email) VALUES (?, ?, ?, ?, ?)',
-        [formData.name, formData.position, formData.department, formData.phone, formData.email]
+        'INSERT INTO people (name, position, department, phone, email, face_image) VALUES (?, ?, ?, ?, ?, ?)',
+        [formData.name, formData.position, formData.department, formData.phone, formData.email, formData.faceImage]
       );
       
-      setFormData({ name: '', position: '', department: '', phone: '', email: '' });
+      setFormData({ name: '', position: '', department: '', phone: '', email: '', faceImage: null });
       setModalVisible(false);
       loadPeople();
       Alert.alert('Success', 'Person added successfully');
@@ -90,8 +166,8 @@ const PeopleScreen = ({ navigation }) => {
     try {
       const db = await openDatabaseAsync('people.db');
       await db.runAsync(
-        'UPDATE people SET name = ?, position = ?, department = ?, phone = ?, email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [formData.name, formData.position, formData.department, formData.phone, formData.email, selectedPerson.id]
+        'UPDATE people SET name = ?, position = ?, department = ?, phone = ?, email = ?, face_image = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [formData.name, formData.position, formData.department, formData.phone, formData.email, formData.faceImage, selectedPerson.id]
       );
       
       setEditModalVisible(false);
@@ -137,18 +213,50 @@ const PeopleScreen = ({ navigation }) => {
       department: person.department || '',
       phone: person.phone || '',
       email: person.email || '',
+      faceImage: person.face_image || null,
     });
     setEditModalVisible(true);
   };
 
   const renderPerson = ({ item }) => (
     <View style={styles.personCard}>
+      {item.face_image && (
+        <Image 
+          source={{ uri: item.face_image }} 
+          style={styles.faceImage}
+        />
+      )}
+      {!item.face_image && (
+        <View style={styles.placeholderImage}>
+          <MaterialIcons name="person" size={40} color="#6B7280" />
+        </View>
+      )}
       <View style={styles.personInfo}>
         <Text style={styles.personName}>{item.name}</Text>
-        <Text style={styles.personDetails}>{item.position}</Text>
-        <Text style={styles.personDetails}>{item.department}</Text>
-        <Text style={styles.personContact}>{item.phone}</Text>
-        <Text style={styles.personContact}>{item.email}</Text>
+        {item.position && (
+          <View style={styles.detailRow}>
+            <MaterialIcons name="work" size={14} color="#9CA3AF" />
+            <Text style={styles.personDetails}>{item.position}</Text>
+          </View>
+        )}
+        {item.department && (
+          <View style={styles.detailRow}>
+            <MaterialIcons name="business" size={14} color="#9CA3AF" />
+            <Text style={styles.personDetails}>{item.department}</Text>
+          </View>
+        )}
+        {item.phone && (
+          <View style={styles.detailRow}>
+            <MaterialIcons name="phone" size={14} color="#3B82F6" />
+            <Text style={styles.personContact}>{item.phone}</Text>
+          </View>
+        )}
+        {item.email && (
+          <View style={styles.detailRow}>
+            <MaterialIcons name="email" size={14} color="#3B82F6" />
+            <Text style={styles.personContact}>{item.email}</Text>
+          </View>
+        )}
       </View>
       <View style={styles.personActions}>
         <TouchableOpacity
@@ -175,70 +283,104 @@ const PeopleScreen = ({ navigation }) => {
       onRequestClose={() => setVisible(false)}
     >
       <View style={styles.modalOverlay}>
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>{title}</Text>
-          
-          <TextInput
-            style={styles.input}
-            placeholder="Name *"
-            placeholderTextColor="#9CA3AF"
-            value={formData.name}
-            onChangeText={(text) => setFormData({ ...formData, name: text })}
-          />
-          
-          <TextInput
-            style={styles.input}
-            placeholder="Position"
-            placeholderTextColor="#9CA3AF"
-            value={formData.position}
-            onChangeText={(text) => setFormData({ ...formData, position: text })}
-          />
-          
-          <TextInput
-            style={styles.input}
-            placeholder="Department"
-            placeholderTextColor="#9CA3AF"
-            value={formData.department}
-            onChangeText={(text) => setFormData({ ...formData, department: text })}
-          />
-          
-          <TextInput
-            style={styles.input}
-            placeholder="Phone"
-            placeholderTextColor="#9CA3AF"
-            value={formData.phone}
-            onChangeText={(text) => setFormData({ ...formData, phone: text })}
-          />
-          
-          <TextInput
-            style={styles.input}
-            placeholder="Email"
-            placeholderTextColor="#9CA3AF"
-            value={formData.email}
-            onChangeText={(text) => setFormData({ ...formData, email: text })}
-          />
-          
-          <View style={styles.modalButtons}>
-            <TouchableOpacity
-              style={styles.cancelButton}
-              onPress={() => {
-                setVisible(false);
-                setFormData({ name: '', position: '', department: '', phone: '', email: '' });
-              }}
-            >
-              <Text style={styles.cancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
+        <ScrollView 
+          contentContainerStyle={styles.modalScrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>{title}</Text>
             
-            <TouchableOpacity
-              style={styles.submitButton}
-              onPress={onSubmit}
-            >
-              <Text style={styles.submitButtonText}>
-                {title === 'Add Person' ? 'Add' : 'Update'}
-              </Text>
-            </TouchableOpacity>
+            {/* Face Image Section */}
+            <View style={styles.imageSection}>
+              {formData.faceImage ? (
+                <View style={styles.imagePreviewContainer}>
+                  <Image 
+                    source={{ uri: formData.faceImage }} 
+                    style={styles.imagePreview}
+                  />
+                  <TouchableOpacity
+                    style={styles.removeImageButton}
+                    onPress={() => setFormData({ ...formData, faceImage: null })}
+                  >
+                    <MaterialIcons name="close" size={20} color="#FFFFFF" />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity 
+                  style={styles.addImageButton}
+                  onPress={showImageOptions}
+                >
+                  <MaterialIcons name="add-a-photo" size={32} color="#3B82F6" />
+                  <Text style={styles.addImageText}>Add Face Image</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            
+            <TextInput
+              style={styles.input}
+              placeholder="Name *"
+              placeholderTextColor="#9CA3AF"
+              value={formData.name}
+              onChangeText={(text) => setFormData({ ...formData, name: text })}
+            />
+            
+            <TextInput
+              style={styles.input}
+              placeholder="Position"
+              placeholderTextColor="#9CA3AF"
+              value={formData.position}
+              onChangeText={(text) => setFormData({ ...formData, position: text })}
+            />
+            
+            <TextInput
+              style={styles.input}
+              placeholder="Department"
+              placeholderTextColor="#9CA3AF"
+              value={formData.department}
+              onChangeText={(text) => setFormData({ ...formData, department: text })}
+            />
+            
+            <TextInput
+              style={styles.input}
+              placeholder="Phone"
+              placeholderTextColor="#9CA3AF"
+              value={formData.phone}
+              onChangeText={(text) => setFormData({ ...formData, phone: text })}
+              keyboardType="phone-pad"
+            />
+            
+            <TextInput
+              style={styles.input}
+              placeholder="Email"
+              placeholderTextColor="#9CA3AF"
+              value={formData.email}
+              onChangeText={(text) => setFormData({ ...formData, email: text })}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={() => {
+                  setVisible(false);
+                  setFormData({ name: '', position: '', department: '', phone: '', email: '', faceImage: null });
+                }}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={styles.submitButton}
+                onPress={onSubmit}
+              >
+                <Text style={styles.submitButtonText}>
+                  {title === 'Add Person' ? 'Add' : 'Update'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        </View>
+        </ScrollView>
       </View>
     </Modal>
   );
@@ -340,9 +482,27 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 12,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
     borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  faceImage: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    marginRight: 12,
+    borderWidth: 2,
+    borderColor: '#3B82F6',
+  },
+  placeholderImage: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    marginRight: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
     borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   personInfo: {
@@ -352,7 +512,13 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: 'bold',
-    marginBottom: 4,
+    marginBottom: 6,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 3,
+    gap: 6,
   },
   personDetails: {
     color: '#9CA3AF',
@@ -406,6 +572,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  modalScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
   modalContent: {
     backgroundColor: '#1E293B',
     borderRadius: 20,
@@ -419,6 +591,48 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     textAlign: 'center',
     marginBottom: 24,
+  },
+  imageSection: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  imagePreviewContainer: {
+    position: 'relative',
+  },
+  imagePreview: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    borderWidth: 3,
+    borderColor: '#3B82F6',
+  },
+  removeImageButton: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    backgroundColor: '#EF4444',
+    borderRadius: 15,
+    width: 30,
+    height: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addImageButton: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    borderWidth: 2,
+    borderColor: '#3B82F6',
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addImageText: {
+    color: '#3B82F6',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 8,
   },
   input: {
     backgroundColor: 'rgba(255, 255, 255, 0.1)',

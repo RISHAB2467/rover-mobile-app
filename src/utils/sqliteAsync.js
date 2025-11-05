@@ -1,8 +1,34 @@
 import * as SQLite from 'expo-sqlite';
 
-// Simple promisified wrapper around expo-sqlite
-export const openDatabaseAsync = (name) => {
-  const db = SQLite.openDatabase(name);
+// Promisified wrapper for expo-sqlite that works with both old and new APIs
+export const openDatabaseAsync = async (name) => {
+  let db;
+  
+  // Try new API first (expo-sqlite 11+)
+  if (SQLite.openDatabaseAsync) {
+    db = await SQLite.openDatabaseAsync(name);
+    
+    // New API already returns promises, so we can use it directly
+    return {
+      db,
+      runAsync: async (sql, params = []) => {
+        return await db.runAsync(sql, params);
+      },
+      getAllAsync: async (sql, params = []) => {
+        return await db.getAllAsync(sql, params);
+      },
+      getFirstAsync: async (sql, params = []) => {
+        const result = await db.getFirstAsync(sql, params);
+        return result || { count: 0 };
+      },
+      execAsync: async (sql) => {
+        return await db.execAsync(sql);
+      },
+    };
+  }
+  
+  // Fallback to old API (expo-sqlite 10 and earlier)
+  db = SQLite.openDatabase(name);
 
   const runAsync = (sql, params = []) => {
     return new Promise((resolve, reject) => {
@@ -25,7 +51,6 @@ export const openDatabaseAsync = (name) => {
 
   const getAllAsync = async (sql, params = []) => {
     const result = await runAsync(sql, params);
-    // result.rows may contain _array or item() depending on environment
     const rows = result.rows || {};
     return rows._array || [];
   };
@@ -36,7 +61,6 @@ export const openDatabaseAsync = (name) => {
   };
 
   const execAsync = async (sql) => {
-    // Split statements by ';' and run sequentially
     const statements = sql.split(';').map(s => s.trim()).filter(Boolean);
     for (const stmt of statements) {
       await runAsync(stmt);
